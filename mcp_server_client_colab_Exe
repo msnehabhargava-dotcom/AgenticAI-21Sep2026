@@ -1,1 +1,258 @@
+# ============================================================
+# LOCAL FASTMCP MATH SERVER + INTERACTIVE CLIENT
+# ============================================================
 
+import logging
+import warnings
+import nest_asyncio
+
+from fastmcp import FastMCP, Client
+
+
+# ------------------------------------------------------------
+# 1. Notebook setup
+# ------------------------------------------------------------
+logging.getLogger(
+    "mcp.server.mcpserver.tools.tool_manager"
+).setLevel(logging.ERROR)
+
+warnings.filterwarnings("ignore")
+nest_asyncio.apply()
+
+# Remove old server if this notebook cell is rerun.
+if "calc_mcp" in locals():
+    del calc_mcp
+
+
+# ------------------------------------------------------------
+# 2. Create MCP server
+# ------------------------------------------------------------
+calc_mcp = FastMCP("NotebookMathServer")
+
+
+@calc_mcp.tool()
+def summation(a: int, b: int) -> int:
+    """Return the sum of two numbers."""
+    return a + b
+
+
+@calc_mcp.tool()
+def subtraction(a: int, b: int) -> int:
+    """Return the subtraction of two numbers."""
+    return a - b
+
+
+@calc_mcp.tool()
+def multiplication(a: int, b: int) -> int:
+    """Return the multiplication of two numbers."""
+    return a * b
+
+
+@calc_mcp.tool()
+def division(a: int, b: int) -> float:
+    """Return the division of two numbers."""
+
+    if b == 0:
+        raise ZeroDivisionError("Cannot divide by zero.")
+
+    # 0 divided by a non-zero number is valid.
+    return a / b
+
+
+@calc_mcp.tool()
+def square(a: int) -> int:
+    """Return the square of a number."""
+    return a * a
+
+
+@calc_mcp.tool()
+def cube(a: int) -> int:
+    """Return the cube of a number."""
+    return a * a * a
+
+
+@calc_mcp.tool()
+def factorial(a: int) -> int:
+    """Return the factorial of a non-negative integer."""
+
+    if a < 0:
+        raise ValueError("Factorial is not defined for negative numbers.")
+
+    result = 1
+
+    for number in range(2, a + 1):
+        result *= number
+
+    return result
+
+
+@calc_mcp.tool()
+def fibonacci(a: int) -> int:
+    """Return the Fibonacci number at position a."""
+
+    if a < 0:
+        raise ValueError("Fibonacci is not defined for negative numbers.")
+
+    first, second = 0, 1
+
+    for _ in range(a):
+        first, second = second, first + second
+
+    return first
+
+
+# ------------------------------------------------------------
+# 3. Helper: get schema properties safely
+# ------------------------------------------------------------
+def get_tool_properties(tool):
+    """
+    FastMCP versions may represent input_schema differently.
+    This returns the parameters as a dictionary when available.
+    """
+
+    schema = getattr(tool, "input_schema", None)
+
+    if isinstance(schema, dict):
+        return schema.get("properties", {})
+
+    if schema and hasattr(schema, "properties"):
+        return schema.properties
+
+    return {}
+
+
+# ------------------------------------------------------------
+# 4. Interactive MCP client
+# ------------------------------------------------------------
+async def start_interactive_mcp_client():
+    client = Client(calc_mcp)
+
+    async with client:
+        discovered_tools = await client.list_tools()
+
+        # Supports both a direct list and an object with .tools.
+        mcp_tools = getattr(discovered_tools, "tools", discovered_tools)
+
+        # Store keys in lowercase because user input is converted to lowercase.
+        tools_dict = {
+            tool.name.lower(): tool
+            for tool in mcp_tools
+        }
+
+        print("\n=== Available MCP Tools ===")
+
+        for index, (tool_name, tool) in enumerate(
+            tools_dict.items(),
+            start=1
+        ):
+            print(f"[{index}] {tool_name} -> {tool.description}")
+
+        print("===========================\n")
+
+        selected_tool_name = input(
+            "Enter tool name (or type 'exit'): "
+        ).strip().lower()
+
+        # Exit condition first.
+        if selected_tool_name == "exit":
+            return False
+
+        # Check dictionary keys, not a particular dictionary value.
+        if selected_tool_name not in tools_dict:
+            print(
+                f"❌ '{selected_tool_name}' is not a valid discovered tool."
+            )
+            print(
+                "Available tools:",
+                ", ".join(tools_dict.keys())
+            )
+            return True
+
+        # Obtain the selected full MCP tool object.
+        chosen_tool = tools_dict[selected_tool_name]
+
+        print(f"\nSelected tool: {chosen_tool.name}")
+        print(f"Description: {chosen_tool.description}")
+
+        # Read arguments dynamically from the discovered schema.
+        arguments = {}
+        properties = get_tool_properties(chosen_tool)
+
+        if properties:
+            for parameter_name in properties:
+                try:
+                    value = input(
+                        f"Enter integer value for '{parameter_name}': "
+                    )
+                    arguments[parameter_name] = int(value)
+
+                except ValueError:
+                    print("❌ Please enter a valid integer.")
+                    return True
+
+        else:
+            # Fallback for unexpected schema variations.
+            print("⚠️ Tool schema was unavailable; using fallback input.")
+
+            if chosen_tool.name in [
+                "summation",
+                "subtraction",
+                "multiplication",
+                "division"
+            ]:
+                arguments["a"] = int(
+                    input("Enter value for a: ")
+                )
+                arguments["b"] = int(
+                    input("Enter value for b: ")
+                )
+
+            else:
+                arguments["a"] = int(
+                    input("Enter value for a: ")
+                )
+
+        print(
+            f"\n🚀 Executing '{chosen_tool.name}' "
+            f"with arguments: {arguments}"
+        )
+
+        try:
+            result = await client.call_tool(
+                chosen_tool.name,
+                arguments
+            )
+
+            content = getattr(result, "content", result)
+
+            if isinstance(content, list) and content:
+                output = getattr(
+                    content[0],
+                    "text",
+                    str(content[0])
+                )
+            else:
+                output = getattr(
+                    content,
+                    "text",
+                    str(content)
+                )
+
+            print(f"✅ Result: {output}\n")
+
+        except Exception as error:
+            print(f"❌ Tool execution failed: {error}\n")
+
+        # Continue the outer while loop.
+        return True
+
+
+# ------------------------------------------------------------
+# 5. Keep asking until user enters exit
+# ------------------------------------------------------------
+while True:
+    keep_running = await start_interactive_mcp_client()
+
+    if not keep_running:
+        print("MCP interactive session ended.")
+        break
